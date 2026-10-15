@@ -27,6 +27,8 @@ STATIC_FILES = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
+FARES = ("bus", "tube")  # the only transport; runners pay a price per stop
+
 PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL")  # set automatically by Render
 AWAKE_FOR = 90 * 60     # keep the free Render instance awake this long after the last player request
 RENDER_IDLE = 15 * 60   # Render sleeps after this much time with no incoming traffic
@@ -50,6 +52,8 @@ def load_lobbies():
     try:
         with open(DATA_FILE, encoding="utf-8") as f:
             lobbies = json.load(f)
+        # drop lobbies saved by the old item/destination version of the game
+        lobbies = {c: l for c, l in lobbies.items() if "forced" in l}
     except (FileNotFoundError, ValueError):
         lobbies = {}
 
@@ -160,6 +164,18 @@ def end_game(lobby, winner, text):
     feed(lobby, text)
 
 
+def forced_status(lobby, quest_id):
+    """'approved', 'pending' or None. Forced quests are shared: one runner completing one counts for the team."""
+    states = {c["status"] for c in lobby["completions"] if c["questId"] == quest_id}
+    return "approved" if "approved" in states else "pending" if "pending" in states else None
+
+
+def check_forced_win(lobby):
+    if (lobby["status"] == "playing" and lobby["forced"]
+            and all(forced_status(lobby, q["id"]) == "approved" for q in lobby["forced"])):
+        end_game(lobby, "runners", "All forced quests complete - runners win!")
+
+
 # ---------- lobby creation ----------
 
 def create_lobby(data):
@@ -172,10 +188,9 @@ def create_lobby(data):
     lobby = {
         "code": code, "created": now(), "updated": now(), "version": 1, "seq": 0,
         "hostId": host["id"], "status": "lobby", "winner": None,
-        "item": "", "destination": "", "requireApproval": True,
-        "itemHolder": None, "delivered": False,
+        "requireApproval": True, "ordered": False, "fares": {"bus": 1, "tube": 2},
         "players": {host["id"]: host},
-        "quests": [], "transports": [], "completions": [], "purchases": [], "feed": [],
+        "forced": [], "quests": [], "completions": [], "purchases": [], "feed": [],
     }
     feed(lobby, f"{name} created the lobby")
     lobbies[code] = lobby
@@ -236,8 +251,6 @@ def a_kick(lobby, me, data):
     if p["id"] == lobby["hostId"]:
         raise ApiError("The host can't be removed")
     del lobby["players"][p["id"]]
-    if lobby["itemHolder"] == p["id"]:
-        lobby["itemHolder"] = None
     feed(lobby, f"{p['name']} was removed")
 
 
@@ -245,42 +258,43 @@ def a_leave(lobby, me, data):
     if me["id"] == lobby["hostId"]:
         raise ApiError("The host can't leave")
     del lobby["players"][me["id"]]
-    if lobby["itemHolder"] == me["id"]:
-        lobby["itemHolder"] = None
     feed(lobby, f"{me['name']} left")
 
 
 def a_settings(lobby, me, data):
-    lobby["item"] = clean(data.get("item"), 120, "Item", required=False)
-    lobby["destination"] = clean(data.get("destination"), 120, "Destination", required=False)
     lobby["requireApproval"] = bool(data.get("requireApproval"))
+    lobby["ordered"] = bool(data.get("ordered"))
+    lobby["fares"] = {m: number(data.get(m), 0, 100000, f"{m.title()} price per stop") for m in FARES}
 
 
 def a_add_quest(lobby, me, data):
+    forced = bool(data.get("forced"))
     q = {"id": new_id(),
          "title": clean(data.get("title"), 80, "Quest title"),
-         "description": clean(data.get("description"), 300, "Description", required=False),
-         "points": number(data.get("points"), 1, 100000, "Points")}
-    lobby["quests"].append(q)
+         "description": clean(data.get("description"), 300, "Description", required=False)}
+    if forced:
+        lobby["forced"].append(q)
+    else:
+        q["points"] = number(data.get("points"), 1, 100000, "Points")
+        lobby["quests"].append(q)
     if lobby["status"] == "playing":
-        feed(lobby, f"New quest: {q['title']} ({q['points']} pts)")
+        feed(lobby, f"New forced quest: {q['title']}" if forced else f"New quest: {q['title']} ({q['points']} pts)")
 
 
 def a_remove_quest(lobby, me, data):
+    lobby["forced"] = [q for q in lobby["forced"] if q["id"] != data.get("questId")]
     lobby["quests"] = [q for q in lobby["quests"] if q["id"] != data.get("questId")]
+    check_forced_win(lobby)
 
 
-def a_add_transport(lobby, me, data):
-    t = {"id": new_id(),
-         "name": clean(data.get("name"), 40, "Transport name"),
-         "cost": number(data.get("cost"), 0, 100000, "Cost")}
-    lobby["transports"].append(t)
-    if lobby["status"] == "playing":
-        feed(lobby, f"New transport option: {t['name']} ({t['cost']} pts)")
-
-
-def a_remove_transport(lobby, me, data):
-    lobby["transports"] = [t for t in lobby["transports"] if t["id"] != data.get("transportId")]
+def a_move_quest(lobby, me, data):
+    qs = lobby["forced"]
+    i = next((i for i, q in enumerate(qs) if q["id"] == data.get("questId")), None)
+    if i is None:
+        raise ApiError("Quest not found")
+    j = i + (1 if data.get("dir") == 1 else -1)
+    if 0 <= j < len(qs):
+        qs[i], qs[j] = qs[j], qs[i]
 
 
 def a_start(lobby, me, data):
@@ -289,6 +303,8 @@ def a_start(lobby, me, data):
     roles = [p["role"] for p in lobby["players"].values()]
     if "hunter" not in roles or "runner" not in roles:
         raise ApiError("Need at least one hunter and one runner")
+    if not lobby["forced"]:
+        raise ApiError("Add at least one forced quest")
     lobby["status"] = "playing"
     lobby["startedAt"] = now()
     feed(lobby, "The game has started! Runners, go!")
@@ -301,8 +317,7 @@ def a_end(lobby, me, data):
 
 
 def a_reset(lobby, me, data):
-    lobby.update(status="lobby", winner=None, itemHolder=None, delivered=False,
-                 completions=[], purchases=[])
+    lobby.update(status="lobby", winner=None, completions=[], purchases=[])
     for p in lobby["players"].values():
         p["points"] = 0
         p["caught"] = False
@@ -311,14 +326,25 @@ def a_reset(lobby, me, data):
 
 def a_claim_quest(lobby, me, data):
     require_free_runner(lobby, me)
-    q = next((q for q in lobby["quests"] if q["id"] == data.get("questId")), None)
+    qid = data.get("questId")
+    forced = next((q for q in lobby["forced"] if q["id"] == qid), None)
+    q = forced or next((q for q in lobby["quests"] if q["id"] == qid), None)
     if not q:
         raise ApiError("Quest not found")
-    if any(c["questId"] == q["id"] and c["playerId"] == me["id"] and c["status"] != "rejected"
-           for c in lobby["completions"]):
+    if forced:
+        st = forced_status(lobby, q["id"])
+        if st:
+            raise ApiError("This quest is already done" if st == "approved"
+                           else "This quest is already waiting for approval")
+        if lobby["ordered"]:
+            first = next(f for f in lobby["forced"] if forced_status(lobby, f["id"]) != "approved")
+            if first is not q:
+                raise ApiError(f"Complete \"{first['title']}\" first")
+    elif any(c["questId"] == q["id"] and c["playerId"] == me["id"] and c["status"] != "rejected"
+             for c in lobby["completions"]):
         raise ApiError("You've already submitted this quest")
-    c = {"id": new_id(), "questId": q["id"], "title": q["title"], "points": q["points"],
-         "playerId": me["id"], "name": me["name"],
+    c = {"id": new_id(), "questId": q["id"], "title": q["title"], "points": 0 if forced else q["points"],
+         "forced": bool(forced), "playerId": me["id"], "name": me["name"],
          "note": clean(data.get("note"), 200, "Note", required=False),
          "status": "pending", "t": now()}
     lobby["completions"].append(c)
@@ -331,6 +357,11 @@ def a_claim_quest(lobby, me, data):
 def approve(lobby, c):
     c["status"] = "approved"
     c["t"] = now()
+    if c.get("forced"):
+        done = sum(forced_status(lobby, q["id"]) == "approved" for q in lobby["forced"])
+        feed(lobby, f"{c['name']} completed forced quest \"{c['title']}\" ({done}/{len(lobby['forced'])})")
+        check_forced_win(lobby)
+        return
     p = lobby["players"].get(c["playerId"])
     if p:
         p["points"] += c["points"]
@@ -348,38 +379,19 @@ def a_review(lobby, me, data):
         feed(lobby, f"{c['name']}'s \"{c['title']}\" was rejected")
 
 
-def a_buy(lobby, me, data):
+def a_ride(lobby, me, data):
     require_free_runner(lobby, me)
-    t = next((t for t in lobby["transports"] if t["id"] == data.get("transportId")), None)
-    if not t:
-        raise ApiError("Transport option not found")
-    if me["points"] < t["cost"]:
-        raise ApiError("Not enough points")
-    me["points"] -= t["cost"]
+    mode = data.get("mode")
+    if mode not in FARES:
+        raise ApiError("Pick the bus or the tube")
+    stops = number(data.get("stops"), 1, 200, "Number of stops")
+    cost = lobby["fares"][mode] * stops
+    if me["points"] < cost:
+        raise ApiError(f"Not enough points ({cost} needed)")
+    me["points"] -= cost
     lobby["purchases"].append({"id": new_id(), "playerId": me["id"], "name": me["name"],
-                               "transport": t["name"], "cost": t["cost"], "t": now()})
-    feed(lobby, f"{me['name']} used {t['name']} (-{t['cost']} pts)")
-
-
-def a_item(lobby, me, data):
-    require_free_runner(lobby, me)
-    action = data.get("action")
-    if action == "got":
-        if lobby["itemHolder"] or lobby["delivered"]:
-            raise ApiError("The item is already held")
-        lobby["itemHolder"] = me["id"]
-        feed(lobby, f"{me['name']} has picked up the item!")
-    elif action in ("drop", "deliver"):
-        if lobby["itemHolder"] != me["id"]:
-            raise ApiError("You don't have the item")
-        if action == "drop":
-            lobby["itemHolder"] = None
-            feed(lobby, f"{me['name']} dropped the item")
-        else:
-            lobby["delivered"] = True
-            end_game(lobby, "runners", f"{me['name']} delivered the item - runners win!")
-    else:
-        raise ApiError("Invalid item action")
+                               "mode": mode, "stops": stops, "cost": cost, "t": now()})
+    feed(lobby, f"{me['name']} took the {mode} {stops} stop{'s' if stops != 1 else ''} (-{cost} pts)")
 
 
 def a_catch(lobby, me, data):
@@ -391,9 +403,6 @@ def a_catch(lobby, me, data):
         raise ApiError("Already caught")
     p["caught"] = True
     feed(lobby, f"{p['name']} was caught by {me['name']}!")
-    if lobby["itemHolder"] == p["id"]:
-        lobby["itemHolder"] = None
-        feed(lobby, "The item has been dropped")
     if all(r["caught"] for r in runners(lobby)):
         end_game(lobby, "hunters", "All runners caught - hunters win!")
 
@@ -416,12 +425,11 @@ HOST, ANY = "host", "any"
 ACTIONS = {
     "set_role": (HOST, a_set_role), "randomize": (HOST, a_randomize), "kick": (HOST, a_kick),
     "settings": (HOST, a_settings), "add_quest": (HOST, a_add_quest),
-    "remove_quest": (HOST, a_remove_quest), "add_transport": (HOST, a_add_transport),
-    "remove_transport": (HOST, a_remove_transport), "start": (HOST, a_start),
+    "remove_quest": (HOST, a_remove_quest), "move_quest": (HOST, a_move_quest), "start": (HOST, a_start),
     "end": (HOST, a_end), "reset": (HOST, a_reset), "review": (HOST, a_review),
     "release": (HOST, a_release), "adjust_points": (HOST, a_adjust_points),
-    "leave": (ANY, a_leave), "claim_quest": (ANY, a_claim_quest), "buy": (ANY, a_buy),
-    "item": (ANY, a_item), "catch": (ANY, a_catch),
+    "leave": (ANY, a_leave), "claim_quest": (ANY, a_claim_quest), "ride": (ANY, a_ride),
+    "catch": (ANY, a_catch),
 }
 
 

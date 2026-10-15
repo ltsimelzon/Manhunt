@@ -4,7 +4,7 @@ const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
 const netEl = document.getElementById('net');
 const KEY = 'manhunt-session';
-const TRANSPORT_PRESETS = ['Lime bike', 'E-scooter', 'Bus', 'Train', 'Tram', 'Metro', 'Taxi'];
+const FARES = [['bus', 'Bus', '🚌'], ['tube', 'Tube', '🚇']];
 
 let session = readSession();   // { code, token }
 let state = null;              // latest lobby state from the server
@@ -136,7 +136,7 @@ function render() {
 
 function home() {
   return `
-  <div class="hero"><h1>MANHUNT</h1><p>Runners grab the item. Hunters stop them.</p></div>
+  <div class="hero"><h1>MANHUNT</h1><p>Runners complete the quests. Hunters stop them.</p></div>
   <section class="card form">
     <label>Your name<input data-key="name" maxlength="20" placeholder="e.g. Alex" autocomplete="nickname"></label>
     <button data-act="create" class="big">Create a lobby</button>
@@ -192,20 +192,22 @@ function lobby() {
   </section>
 
   <section class="card">
-    <h2>Objective</h2>
-    ${host ? settingsForm() : objective()}
+    <h2>Forced quests</h2>
+    <p class="sub">Runners win by completing all of these.</p>
+    ${forcedList(false)}
+    ${host ? questForm(true) : ''}
   </section>
 
   <section class="card">
-    <h2>Quests</h2>
+    <h2>Bonus quests</h2>
+    <p class="sub">Earn points to spend on the bus and tube.</p>
     ${questList(false)}
-    ${host ? questForm() : ''}
+    ${host ? questForm(false) : ''}
   </section>
 
   <section class="card">
-    <h2>Transport costs</h2>
-    ${transportList(false)}
-    ${host ? transportForm() : ''}
+    <h2>Rules</h2>
+    ${host ? settingsForm() : rules()}
   </section>
 
   ${host
@@ -213,34 +215,72 @@ function lobby() {
     : `<p class="muted center">Waiting for the host to start…</p>`}`;
 }
 
-function objective() {
+function rules() {
   const s = state;
-  const holder = s.itemHolder && player(s.itemHolder);
-  const status = s.delivered ? '<span class="good">Delivered 🏁</span>'
-    : holder ? `Held by ${esc(holder.name)}` : 'Not yet retrieved';
   return `<dl class="obj">
-    <dt>Item</dt><dd>${esc(s.item) || '<span class="muted">Not set</span>'}</dd>
-    <dt>Deliver to</dt><dd>${esc(s.destination) || '<span class="muted">Not set</span>'}</dd>
-    ${s.status !== 'lobby' ? `<dt>Status</dt><dd>${status}</dd>` : ''}
+    <dt>Forced quests</dt><dd>${s.ordered ? 'In the set order' : 'In any order'}</dd>
+    ${FARES.map(([mode, label]) => `<dt>${label}</dt><dd>${plural(s.fares[mode], 'pt')} per stop</dd>`).join('')}
+    <dt>Quest approval</dt><dd>${s.requireApproval ? 'Host approves' : 'Instant'}</dd>
   </dl>`;
 }
 
 function settingsForm() {
   const s = state;
   return `<div class="form">
-    <label>Item the runners must retrieve
-      <input data-key="item" value="${esc(s.item)}" maxlength="120" placeholder="e.g. Red flag tied to the park bench"></label>
-    <label>Where they must take it
-      <input data-key="destination" value="${esc(s.destination)}" maxlength="120" placeholder="e.g. Town hall steps"></label>
+    <label class="check"><input type="checkbox" data-key="ordered" ${s.ordered ? 'checked' : ''}>
+      Forced quests must be done in the order listed</label>
     <label class="check"><input type="checkbox" data-key="requireApproval" ${s.requireApproval ? 'checked' : ''}>
       Host must approve quest completions</label>
-    <button data-act="save-settings" data-primary>Save objective</button>
+    <div class="fares">${FARES.map(([mode, label, icon]) => `
+      <label>${icon} ${label} · pts per stop
+        <input type="number" min="0" data-key="fare-${mode}" value="${s.fares[mode]}"></label>`).join('')}
+    </div>
+    <button data-act="save-settings" data-primary>Save rules</button>
   </div>`;
+}
+
+// A forced quest is shared by the team: its latest approved/pending submission, else any rejected one.
+function forcedSubmission(id) {
+  const cs = state.completions.filter(c => c.questId === id);
+  return cs.find(c => c.status === 'approved') || cs.find(c => c.status === 'pending') || cs[0] || null;
+}
+
+function forcedList(interactive) {
+  const s = state, m = me(), host = isHost();
+  if (!s.forced.length) return '<p class="muted">No forced quests yet.</p>';
+  const canDo = interactive && s.status === 'playing' && m.role === 'runner' && !m.caught;
+  const done = s.forced.filter(q => forcedSubmission(q.id)?.status === 'approved').length;
+  const next = s.forced.find(q => forcedSubmission(q.id)?.status !== 'approved');
+  return `<p class="sub">${s.ordered ? 'Must be done in this order' : 'Can be done in any order'}${
+    s.status !== 'lobby' ? ` · <strong>${done}/${s.forced.length} done</strong>` : ''}</p>
+  <ul class="list">${s.forced.map((q, i) => {
+    const c = forcedSubmission(q.id), st = c?.status;
+    const locked = s.ordered && q !== next && st !== 'approved';
+    return `<li class="quest">
+      <div class="row">
+        ${s.ordered ? `<span class="num">${i + 1}</span>` : ''}
+        <div class="grow"><strong>${esc(q.title)}</strong>${q.description ? `<div class="sub">${esc(q.description)}</div>` : ''}</div>
+        ${host && s.ordered ? `
+          <button class="icon" data-act="move" data-id="${q.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+          <button class="icon" data-act="move" data-id="${q.id}" data-dir="1" ${i === s.forced.length - 1 ? 'disabled' : ''} title="Move down">↓</button>` : ''}
+        ${host ? `<button class="icon" data-act="rm-quest" data-id="${q.id}" data-confirm="Delete?" title="Delete quest">✕</button>` : ''}
+      </div>
+      ${s.status === 'lobby' ? ''
+        : st === 'approved' ? `<div class="status good">✔ Done by ${esc(nameOf(c.playerId, c.name))}${c.note ? ` · “${esc(c.note)}”` : ''}</div>`
+        : st === 'pending' ? `<div class="status warn">⏳ ${esc(nameOf(c.playerId, c.name))} submitted — waiting for host approval</div>`
+        : locked ? '<div class="status muted">🔒 Locked until the previous quest is done</div>'
+        : canDo ? `${st === 'rejected' ? '<div class="status bad">Last attempt rejected — try again</div>' : ''}
+          <div class="form inline">
+            <input data-key="note-${q.id}" maxlength="200" placeholder="Proof / note (optional)">
+            <button data-act="claim" data-id="${q.id}" data-primary>Done!</button>
+          </div>` : ''}
+    </li>`;
+  }).join('')}</ul>`;
 }
 
 function questList(interactive) {
   const s = state;
-  if (!s.quests.length) return '<p class="muted">No quests yet.</p>';
+  if (!s.quests.length) return '<p class="muted">No bonus quests yet.</p>';
   const canDo = interactive && s.status === 'playing' && me().role === 'runner' && !me().caught;
   return `<ul class="list">${s.quests.map(q => {
     const mine = s.completions.filter(c => c.questId === q.id && c.playerId === s.you);
@@ -265,39 +305,29 @@ function questList(interactive) {
   }).join('')}</ul>`;
 }
 
-function questForm() {
+function questForm(forced) {
+  const p = forced ? 'f' : 'q';
   return `<div class="form">
-    <div class="pair">
+    ${forced
+      ? `<input data-key="fTitle" maxlength="80" placeholder="Forced quest, e.g. Touch the statue in the square">`
+      : `<div class="pair">
       <input data-key="qTitle" maxlength="80" placeholder="Quest, e.g. Selfie with a pigeon">
       <input data-key="qPoints" type="number" min="1" placeholder="Points">
-    </div>
-    <input data-key="qDesc" maxlength="300" placeholder="Details (optional)">
-    <button data-act="add-quest" data-primary>+ Add quest</button>
+    </div>`}
+    <input data-key="${p}Desc" maxlength="300" placeholder="Details (optional)">
+    <button data-act="add-quest" data-forced="${forced ? '1' : ''}" data-primary>+ Add ${forced ? 'forced' : 'bonus'} quest</button>
   </div>`;
 }
 
-function transportList(interactive) {
+function fareList(interactive) {
   const s = state, m = me();
-  if (!s.transports.length) return '<p class="muted">No transport options yet.</p>';
-  const canBuy = interactive && s.status === 'playing' && m.role === 'runner' && !m.caught;
-  return `<ul class="list">${s.transports.map(t => `
+  const canRide = interactive && s.status === 'playing' && m.role === 'runner' && !m.caught;
+  return `<ul class="list">${FARES.map(([mode, label, icon]) => `
     <li class="row">
-      <div class="grow"><strong>${esc(t.name)}</strong> <span class="sub">per use</span></div>
-      <span class="pts-inline">${t.cost} pts</span>
-      ${canBuy ? `<button class="small" data-act="buy" data-id="${t.id}" data-confirm="Spend ${t.cost}?" ${m.points < t.cost ? 'disabled' : ''}>Use</button>` : ''}
-      ${isHost() ? `<button class="icon" data-act="rm-transport" data-id="${t.id}" data-confirm="Delete?" title="Delete option">✕</button>` : ''}
+      <div class="grow"><strong>${icon} ${label}</strong><div class="sub">${plural(s.fares[mode], 'pt')} per stop</div></div>
+      ${canRide ? `<input class="stops" type="number" min="1" inputmode="numeric" data-key="stops-${mode}" placeholder="Stops">
+        <button class="small" data-act="ride" data-mode="${mode}" data-confirm>Ride</button>` : ''}
     </li>`).join('')}</ul>`;
-}
-
-function transportForm() {
-  return `<div class="form">
-    <div class="chips">${TRANSPORT_PRESETS.map(n => `<button data-act="preset" data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
-    <div class="pair">
-      <input data-key="tName" maxlength="40" placeholder="Transport, e.g. Bus">
-      <input data-key="tCost" type="number" min="0" placeholder="Cost">
-    </div>
-    <button data-act="add-transport" data-primary>+ Add transport</button>
-  </div>`;
 }
 
 function game() {
@@ -324,18 +354,6 @@ function statusTab() {
   const hunters = s.players.filter(p => p.role === 'hunter');
   const canCatch = playing && (host || m.role === 'hunter');
 
-  let itemButtons = '';
-  if (playing && m.role === 'runner' && !m.caught) {
-    if (!s.itemHolder && !s.delivered) {
-      itemButtons = `<button class="big" data-act="item" data-do="got" data-confirm="Tap again to confirm pickup">📦 I've got the item</button>`;
-    } else if (s.itemHolder === m.id) {
-      itemButtons = `<div class="btns">
-        <button class="big good" data-act="item" data-do="deliver" data-confirm="Tap again to confirm delivery">🏁 Delivered it!</button>
-        <button class="ghost" data-act="item" data-do="drop" data-confirm="Drop it?">Dropped it</button>
-      </div>`;
-    }
-  }
-
   return `
   ${m.role === 'runner' ? `<section class="card balance">
     <div class="label">Your points</div><div class="big-num">${m.points}</div>
@@ -343,10 +361,9 @@ function statusTab() {
   </section>` : ''}
 
   <section class="card">
-    <h2>Objective</h2>
-    ${objective()}
-    ${itemButtons}
-    ${host ? `<details><summary>Edit objective</summary>${settingsForm()}</details>` : ''}
+    <h2>Forced quests</h2>
+    ${forcedList(true)}
+    ${host ? `<details><summary>Add forced quest</summary>${questForm(true)}</details>` : ''}
   </section>
 
   <section class="card">
@@ -355,7 +372,7 @@ function statusTab() {
       const done = s.completions.filter(c => c.playerId === p.id && c.status === 'approved').length;
       return `<li class="row ${p.caught ? 'caught' : ''}">
         <div class="grow">
-          <strong>${esc(p.name)}</strong>${p.id === s.you ? ' <span class="tag">you</span>' : ''}${p.id === s.itemHolder ? ' <span class="tag item">📦 item</span>' : ''}
+          <strong>${esc(p.name)}</strong>${p.id === s.you ? ' <span class="tag">you</span>' : ''}
           <div class="sub">${plural(done, 'quest')} done · ${p.caught ? '<span class="bad">CAUGHT</span>' : 'free'}</div>
         </div>
         <div class="pts">${p.points}<small>pts</small></div>
@@ -372,6 +389,7 @@ function statusTab() {
 
   ${host ? `<section class="card host">
     <h2>Host controls</h2>
+    <details><summary>Edit rules (order, fares, approval)</summary>${settingsForm()}</details>
     ${runners.length ? `<div class="form inline">
       <select data-key="adjWho">${runners.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
       <input type="number" data-key="adjAmt" placeholder="± points">
@@ -394,7 +412,7 @@ function questsTab() {
     <h2>Awaiting your approval</h2>
     <ul class="list">${pending.map(c => `
       <li class="row">
-        <div class="grow"><strong>${esc(nameOf(c.playerId, c.name))}</strong> — ${esc(c.title)} <span class="pts-inline">+${c.points}</span>
+        <div class="grow"><strong>${esc(nameOf(c.playerId, c.name))}</strong> — ${esc(c.title)} ${reward(c)}
           ${c.note ? `<div class="sub">“${esc(c.note)}”</div>` : ''}</div>
         <button class="good small" data-act="review" data-id="${c.id}" data-ok="1" title="Approve">✓</button>
         <button class="danger small" data-act="review" data-id="${c.id}" data-ok="0" title="Reject">✕</button>
@@ -402,9 +420,10 @@ function questsTab() {
   </section>` : ''}
 
   <section class="card">
-    <h2>Quests</h2>
+    <h2>Bonus quests</h2>
+    <p class="sub">Earn points to spend on the bus and tube.</p>
     ${questList(true)}
-    ${host ? questForm() : ''}
+    ${host ? questForm(false) : ''}
   </section>
 
   <section class="card">
@@ -413,10 +432,12 @@ function questsTab() {
       <li class="row">
         <div class="grow"><strong>${esc(nameOf(c.playerId, c.name))}</strong> — ${esc(c.title)}
           <div class="sub">${fmtTime(c.t)}${c.note ? ` · “${esc(c.note)}”` : ''}</div></div>
-        <span class="pts-inline">+${c.points}</span>
+        ${reward(c)}
       </li>`).join('')}</ul>` : '<p class="muted">None yet.</p>'}
   </section>`;
 }
+
+const reward = c => c.forced ? '<span class="tag">forced</span>' : `<span class="pts-inline">+${c.points}</span>`;
 
 function travelTab() {
   const s = state, m = me();
@@ -424,15 +445,15 @@ function travelTab() {
   return `
   ${m.role === 'runner' ? `<section class="card balance"><div class="label">Your points</div><div class="big-num">${m.points}</div></section>` : ''}
   <section class="card">
-    <h2>Transport prices</h2>
-    ${transportList(true)}
-    ${isHost() ? transportForm() : ''}
+    <h2>Bus &amp; tube</h2>
+    <p class="sub">Enter how many stops you're riding, then pay.</p>
+    ${fareList(true)}
   </section>
   <section class="card">
     <h2>Transport used</h2>
     ${used.length ? `<ul class="list">${used.map(u => `
       <li class="row">
-        <div class="grow"><strong>${esc(nameOf(u.playerId, u.name))}</strong> used ${esc(u.transport)}<div class="sub">${fmtTime(u.t)}</div></div>
+        <div class="grow"><strong>${esc(nameOf(u.playerId, u.name))}</strong> took the ${esc(u.mode)} · ${plural(u.stops, 'stop')}<div class="sub">${fmtTime(u.t)}</div></div>
         <span class="pts-inline">−${u.cost}</span>
       </li>`).join('')}</ul>` : '<p class="muted">Nobody has used transport yet.</p>'}
   </section>`;
@@ -464,6 +485,15 @@ app.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]');
   if (!b || b.disabled) return;
   const d = b.dataset;
+
+  // Work out the fare before asking for confirmation, so the button shows the price.
+  if (d.act === 'ride' && d.armed !== '1') {
+    const stops = parseInt(val('stops-' + d.mode), 10);
+    if (!(stops > 0)) return toast('Enter how many stops', 'bad');
+    const cost = stops * state.fares[d.mode];
+    if (cost > me().points) return toast(`That costs ${cost} pts — you have ${me().points}`, 'bad');
+    d.confirm = `Pay ${cost} pts?`;
+  }
 
   // Two-tap confirmation for anything destructive or important.
   if (d.confirm !== undefined && d.armed !== '1') {
@@ -503,25 +533,25 @@ app.addEventListener('click', async e => {
     case 'kick': return act('kick', { playerId: d.id });
     case 'randomize': return act('randomize', { hunters: val('numHunters') || 1 });
     case 'save-settings': {
+      const pick = (k, current) => k in drafts ? drafts[k] : current;
       const ok = await act('settings', {
-        item: 'item' in drafts ? val('item') : s.item,
-        destination: 'destination' in drafts ? val('destination') : s.destination,
-        requireApproval: 'requireApproval' in drafts ? drafts.requireApproval : s.requireApproval,
+        ordered: pick('ordered', s.ordered),
+        requireApproval: pick('requireApproval', s.requireApproval),
+        bus: pick('fare-bus', s.fares.bus),
+        tube: pick('fare-tube', s.fares.tube),
       });
-      if (ok) { clear('item', 'destination', 'requireApproval'); render(); toast('Objective saved'); }
+      if (ok) { clear('ordered', 'requireApproval', 'fare-bus', 'fare-tube'); render(); toast('Rules saved'); }
       return;
     }
-    case 'add-quest':
-      if (await act('add_quest', { title: val('qTitle'), description: val('qDesc'), points: val('qPoints') })) {
-        clear('qTitle', 'qDesc', 'qPoints'); render();
+    case 'add-quest': {
+      const p = d.forced ? 'f' : 'q';
+      if (await act('add_quest', { forced: !!d.forced, title: val(p + 'Title'), description: val(p + 'Desc'), points: val('qPoints') })) {
+        clear(p + 'Title', p + 'Desc', p + 'Points'); render();
       }
       return;
+    }
     case 'rm-quest': return act('remove_quest', { questId: d.id });
-    case 'preset': drafts.tName = d.name; render(); app.querySelector('[data-key="tCost"]')?.focus(); return;
-    case 'add-transport':
-      if (await act('add_transport', { name: val('tName'), cost: val('tCost') })) { clear('tName', 'tCost'); render(); }
-      return;
-    case 'rm-transport': return act('remove_transport', { transportId: d.id });
+    case 'move': return act('move_quest', { questId: d.id, dir: Number(d.dir) });
     case 'start': tab = 'status'; return act('start');
     case 'end': return act('end', { winner: d.winner || null });
     case 'reset': return act('reset');
@@ -529,8 +559,9 @@ app.addEventListener('click', async e => {
       if (await act('claim_quest', { questId: d.id, note: val('note-' + d.id) })) { clear('note-' + d.id); render(); }
       return;
     case 'review': return act('review', { completionId: d.id, approve: d.ok === '1' });
-    case 'buy': return act('buy', { transportId: d.id });
-    case 'item': return act('item', { action: d.do });
+    case 'ride':
+      if (await act('ride', { mode: d.mode, stops: val('stops-' + d.mode) })) { clear('stops-' + d.mode); render(); }
+      return;
     case 'catch': return act('catch', { playerId: d.id });
     case 'release': return act('release', { playerId: d.id });
     case 'adjust': {

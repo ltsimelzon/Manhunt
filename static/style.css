@@ -72,8 +72,6 @@ button.armed { background: var(--warn); color: #111; }
 .divider { text-align: center; color: var(--muted); font-size: .85rem; margin: 6px 0; }
 .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .btns > button { flex: 1; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chips button { background: var(--bg); border: 1px solid var(--line); color: var(--text); font-weight: 500; min-height: 32px; padding: 4px 10px; font-size: .85rem; }
 
 .list { list-style: none; margin: 0; padding: 0; }
 .list > li { padding: 10px 0; border-top: 1px solid var(--line); }
@@ -85,9 +83,12 @@ button.armed { background: var(--warn); color: #111; }
 .quest .form { margin-top: 8px; }
 .status { font-size: .85rem; font-weight: 700; margin-top: 6px; }
 .status.good { color: var(--runner); } .status.warn { color: var(--warn); } .status.bad { color: var(--hunter); }
+.status.muted { color: var(--muted); font-weight: 600; }
+.num { flex: none; width: 28px; height: 28px; border-radius: 99px; display: grid; place-items: center; background: var(--bg); border: 1px solid var(--line); font-weight: 800; font-size: .85rem; color: var(--accent); }
+.fares { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+input.stops { width: 86px; flex: none; }
 
 .tag { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; margin-left: 4px; vertical-align: middle; }
-.tag.item { color: var(--warn); border-color: var(--warn); }
 .pill { font-size: .75rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; padding: 4px 10px; border-radius: 99px; }
 .pill.runner { background: color-mix(in srgb, var(--runner) 20%, transparent); color: var(--runner); }
 .pill.hunter { background: color-mix(in srgb, var(--hunter) 20%, transparent); color: var(--hunter); }

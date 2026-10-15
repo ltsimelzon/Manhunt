@@ -4,14 +4,16 @@ A website for running a real-life manhunt game from your phones.
 
 - **Lobbies**: create one (you get a 5-character code + invite link) or join with a code.
 - **Roles**: the host picks hunters/runners manually or randomises them.
-- **Objective**: the host sets the item runners must retrieve and where to deliver it.
-  Runners tap "I've got the item" → "Delivered it!" to win. If every runner is caught, hunters win.
-- **Quests**: the host adds quests with point values. Runners mark them done (with an optional
-  proof note); the host approves them (can be switched off so points are instant).
-- **Transport**: the host sets the point cost of each transport (Lime bike, bus, train…).
-  Runners spend points to "use" one.
-- **Hunters see everything**: every runner's points, completed quests (with notes), transport used,
-  and a live feed of events.
+- **Forced quests**: the host sets the quests the runners must complete to win, and chooses whether
+  they can be done in any order or must follow the order the host sets (↑/↓ to reorder). They're shared
+  by the team — any free runner can complete one. If every runner is caught first, hunters win.
+- **Bonus quests**: optional quests with point values, used to earn points for travel.
+- **Approval**: runners mark quests done (with an optional proof note); the host approves them
+  (can be switched off so completions are instant).
+- **Transport**: only bus and tube. The host sets a points price per stop for each; runners enter
+  how many stops they're riding and pay stops × price.
+- **Hunters see everything**: forced-quest progress, every runner's points, completed quests (with notes),
+  journeys taken, and a live feed of events.
 
 ## Run it
 
